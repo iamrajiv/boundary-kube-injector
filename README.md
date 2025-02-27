@@ -6,12 +6,22 @@ A CLI tool to connect to HashiCorp Boundary targets with an interactive selectio
 
 ## Overview
 
+# Boundary Kubernetes Injector
+
+![](flow.svg)
+
+A CLI tool to connect to HashiCorp Boundary targets with an interactive selection interface.
+
+## Overview
+
 This tool provides an interactive CLI interface for authenticating with HashiCorp Boundary and connecting to available targets. It simplifies the process of navigating through organizations, projects, and targets by providing a user-friendly selection menu.
 
 ## Features
 
 - Interactive menu-driven interface
 - Direct target connection via ID or alias
+- Configurable credential field names
+- Custom Kubernetes configuration paths
 - Environmental configuration via `.env` file
 - Automatic authentication with Boundary
 - Hierarchical navigation through:
@@ -95,6 +105,39 @@ Connect to a target using its name or alias:
 ./main --target-alias my-kubernetes-cluster
 ```
 
+## Configuration Options
+
+#### Custom Credential Field Names
+
+If your Boundary server uses different field names for Kubernetes credentials:
+
+```bash
+./main --cert-key "kubernetes_ca_cert" --token-key "k8s_token"
+```
+
+Default values:
+
+- `--cert-key`: "ca_crt"
+- `--token-key`: "service_account_token"
+
+#### Custom Kubernetes Config Path
+
+Specify a different location for the Kubernetes config file:
+
+```bash
+./main --kube-config "/path/to/custom/kubeconfig"
+```
+
+Default: `~/.kube/config`
+
+#### Skip Session Selection
+
+Automatically create a new session instead of prompting to choose an existing one:
+
+```bash
+./main --skip-selection
+```
+
 > Examples
 
 #### Workflow with Desktop Client
@@ -119,29 +162,48 @@ If you have a target with a memorable name:
 
 The tool will find the target with that name/alias across all organizations and projects, then connect to it directly.
 
+#### Custom Credential Format Example
+
+For Boundary installations using custom credential key names:
+
+```bash
+./main --target-id ttcp_1234567890 --cert-key "ca_certificate" --token-key "access_token"
+```
+
+#### Automation Example
+
+For scripting without interactive prompts:
+
+```bash
+./main --target-id ttcp_1234567890 --skip-selection --kube-config /tmp/kube_config
+```
+
 ## Program Flow
 
 1. **Configuration Loading**
 
    - Loads environment variables from `.env`
    - Validates required configuration
+   - Processes command-line flags
 
 2. **Authentication**
 
    - Authenticates with Boundary server
    - Stores authentication token
 
-3. **Resource Selection** (Interactive mode only)
+3. **Resource Selection**
 
-   - Lists and displays available organizations
-   - Shows projects within selected organization
-   - Displays targets within selected project
+   - If using direct mode: Looks up target by ID or alias
+   - If using interactive mode:
+     - Lists and displays available organizations
+     - Shows projects within selected organization
+     - Displays targets within selected project
 
 4. **Target Connection**
    - Establishes connection to selected target
    - Extracts credentials from the Boundary session
    - For Kubernetes targets:
-     - Saves the certificate to `~/.kube/`
+     - Saves the certificate to `~/.kube/` or custom location
      - Updates the Kubernetes configuration
      - Sets up authentication for the cluster
 
