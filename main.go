@@ -36,9 +36,12 @@ type Config struct {
 
 // CLIConfig holds the command-line flag values
 type CLIConfig struct {
-	TargetID      string
-	TargetAlias   string
-	SkipSelection bool
+	TargetID       string
+	TargetAlias    string
+	SkipSelection  bool
+	CertKeyName    string
+	TokenKeyName   string
+	KubeConfigPath string
 }
 
 type ScopeInfo struct {
@@ -443,8 +446,19 @@ func buildTargetOptions(targets []TargetInfo) ([]string, map[string]string) {
 	return options, targetMap
 }
 
-func extractSessionInfo(output string) map[string]string {
+func extractSessionInfo(output string, cliConfig CLIConfig) map[string]string {
 	info := make(map[string]string)
+
+	// Default key names if not specified in CLI config
+	certKeyName := "ca_crt"
+	if cliConfig.CertKeyName != "" {
+		certKeyName = cliConfig.CertKeyName
+	}
+
+	tokenKeyName := "service_account_token"
+	if cliConfig.TokenKeyName != "" {
+		tokenKeyName = cliConfig.TokenKeyName
+	}
 
 	// Patterns for various target types
 	patterns := map[string]*regexp.Regexp{
@@ -452,8 +466,8 @@ func extractSessionInfo(output string) map[string]string {
 		"expiration":    regexp.MustCompile(`Expiration:\s+(.+)`),
 		"address":       regexp.MustCompile(`Address:\s+(.+)`),
 		"port":          regexp.MustCompile(`Port:\s+(\d+)`),
-		"certificate":   regexp.MustCompile(`ca_crt":\s+"([^"]+)"`),
-		"access_token":  regexp.MustCompile(`service_account_token":\s+"([^"]+)"`),
+		"certificate":   regexp.MustCompile(fmt.Sprintf(`%s":\s+"([^"]+)"`, certKeyName)),
+		"access_token":  regexp.MustCompile(fmt.Sprintf(`%s":\s+"([^"]+)"`, tokenKeyName)),
 		"proxy_port":    regexp.MustCompile(`listening on .*:(\d+)`),
 		"proxy_address": regexp.MustCompile(`listening on ([\d.]+:\d+)`),
 	}
@@ -519,13 +533,24 @@ func saveCertificate(certificate, targetID, sessionID string) error {
 	return nil
 }
 
-func updateKubeConfig(targetID, sessionID, address, port, certificatePath, accessToken, targetName string) error {
+func updateKubeConfig(targetID, sessionID, address, port, certificatePath, accessToken, targetName string, cliConfig CLIConfig) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("error getting home directory: %v", err)
 	}
 
+	// Use custom kube config path if provided
 	configPath := filepath.Join(homeDir, ".kube", "config")
+	if cliConfig.KubeConfigPath != "" {
+		configPath = cliConfig.KubeConfigPath
+	}
+
+	// Create directory if it doesn't exist
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("error creating directory %s: %v", configDir, err)
+	}
+
 	var existingConfig []byte
 
 	// Read existing config if it exists
@@ -652,7 +677,7 @@ user:
 	return nil
 }
 
-func runBoundaryConnect(config Config, targetId, targetName string, client *api.Client) error {
+func runBoundaryConnect(config Config, targetId, targetName string, client *api.Client, cliConfig CLIConfig) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %v", err)
@@ -700,7 +725,8 @@ func runBoundaryConnect(config Config, targetId, targetName string, client *api.
 	}
 
 	var selectedSessionID string
-	if len(sessions) > 0 {
+	// Skip session selection if requested via flag
+	if !cliConfig.SkipSelection && len(sessions) > 0 {
 		var options []string
 		sessionMap := make(map[string]string)
 		options = append(options, "Create New Session")
@@ -740,6 +766,8 @@ func runBoundaryConnect(config Config, targetId, targetName string, client *api.
 				}
 			}
 		}
+	} else if len(sessions) > 0 && cliConfig.SkipSelection {
+		fmt.Println("Skipping session selection due to --skip-selection flag")
 	}
 
 	// Create new session
@@ -842,7 +870,8 @@ func runBoundaryConnect(config Config, targetId, targetName string, client *api.
 		return fmt.Errorf("no output from boundary connect, command may have failed")
 	}
 
-	sessionInfo := extractSessionInfo(output)
+	// Use configurable key names when extracting session info
+	sessionInfo := extractSessionInfo(output, cliConfig)
 
 	fmt.Println("\nSession Information for Target ID:", targetId)
 	fmt.Println("----------------------------------------")
@@ -862,7 +891,7 @@ func runBoundaryConnect(config Config, targetId, targetName string, client *api.
 
 	// For Kubernetes-specific targets
 	if sessionInfo["access_token"] != "" && sessionInfo["port"] != "" && sessionInfo["certificate"] != "" {
-		if err := updateKubeConfig(targetId, sessionInfo["session_id"], sessionInfo["address"], sessionInfo["port"], certPath, sessionInfo["access_token"], targetName); err != nil {
+		if err := updateKubeConfig(targetId, sessionInfo["session_id"], sessionInfo["address"], sessionInfo["port"], certPath, sessionInfo["access_token"], targetName, cliConfig); err != nil {
 			return fmt.Errorf("error updating kube config: %v", err)
 		}
 	} else if sessionInfo["proxy_port"] != "" || sessionInfo["port"] != "" {
@@ -884,7 +913,7 @@ func runBoundaryConnect(config Config, targetId, targetName string, client *api.
 }
 
 // Direct connection handler for when a specific target is provided
-func handleDirectConnection(client *api.Client, config Config, targetID string) error {
+func handleDirectConnection(client *api.Client, config Config, targetID string, cliConfig CLIConfig) error {
 	// Read the target information to show user something
 	targetClient := targets.NewClient(client)
 	target, err := targetClient.Read(context.Background(), targetID)
@@ -896,7 +925,7 @@ func handleDirectConnection(client *api.Client, config Config, targetID string) 
 	fmt.Printf("Connecting directly to target: %s (%s)\n", target.Item.Name, targetID)
 
 	// Run the boundary connect with appropriate configuration
-	if err := runBoundaryConnect(config, targetID, target.Item.Name, client); err != nil {
+	if err := runBoundaryConnect(config, targetID, target.Item.Name, client, cliConfig); err != nil {
 		fmt.Printf("Error connecting to target: %v\n", err)
 		os.Exit(1)
 	}
@@ -907,7 +936,7 @@ func handleDirectConnection(client *api.Client, config Config, targetID string) 
 // Main Flow
 // ----------------------------------------
 
-func listAndPrintScopes(client *api.Client, config Config) error {
+func listAndPrintScopes(client *api.Client, config Config, cliConfig CLIConfig) error {
 	scopeClient := scopes.NewClient(client)
 
 	orgScopes, err := listOrgScopes(scopeClient)
@@ -952,7 +981,7 @@ func listAndPrintScopes(client *api.Client, config Config) error {
 		}
 	}
 
-	if err := runBoundaryConnect(config, selectedTargetID, targetName, client); err != nil {
+	if err := runBoundaryConnect(config, selectedTargetID, targetName, client, cliConfig); err != nil {
 		return fmt.Errorf("error running boundary connect: %v", err)
 	}
 
@@ -967,6 +996,9 @@ func main() {
 	flag.StringVar(&cliConfig.TargetID, "target-id", "", "Direct Boundary target ID to connect to (bypasses selection)")
 	flag.StringVar(&cliConfig.TargetAlias, "target-alias", "", "Boundary target alias to connect to (bypasses selection)")
 	flag.BoolVar(&cliConfig.SkipSelection, "skip-selection", false, "Skip the interactive selection workflow")
+	flag.StringVar(&cliConfig.CertKeyName, "cert-key", "ca_crt", "JSON key for certificate in boundary credentials")
+	flag.StringVar(&cliConfig.TokenKeyName, "token-key", "service_account_token", "JSON key for token in boundary credentials")
+	flag.StringVar(&cliConfig.KubeConfigPath, "kube-config", "", "Path to Kubernetes config file (defaults to ~/.kube/config)")
 	flag.Parse()
 
 	// Load environment configuration
@@ -977,7 +1009,7 @@ func main() {
 	if cliConfig.TargetID != "" {
 		// Direct target ID connection workflow
 		fmt.Printf("Using provided target ID: %s\n", cliConfig.TargetID)
-		if err := handleDirectConnection(client, config, cliConfig.TargetID); err != nil {
+		if err := handleDirectConnection(client, config, cliConfig.TargetID, cliConfig); err != nil {
 			fmt.Printf("Error connecting to target: %v\n", err)
 			os.Exit(1)
 		}
@@ -990,13 +1022,13 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("Found target ID: %s for alias: %s\n", targetID, cliConfig.TargetAlias)
-		if err := handleDirectConnection(client, config, targetID); err != nil {
+		if err := handleDirectConnection(client, config, targetID, cliConfig); err != nil {
 			fmt.Printf("Error connecting to target: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
 		// Use the existing interactive workflow
-		if err := listAndPrintScopes(client, config); err != nil {
+		if err := listAndPrintScopes(client, config, cliConfig); err != nil {
 			fmt.Printf("Error in interactive workflow: %v\n", err)
 			os.Exit(1)
 		}
