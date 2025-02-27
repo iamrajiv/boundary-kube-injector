@@ -11,6 +11,7 @@ This tool provides an interactive CLI interface for authenticating with HashiCor
 ## Features
 
 - Interactive menu-driven interface
+- Direct target connection via ID or alias
 - Environmental configuration via `.env` file
 - Automatic authentication with Boundary
 - Hierarchical navigation through:
@@ -19,6 +20,7 @@ This tool provides an interactive CLI interface for authenticating with HashiCor
   - Targets
 - Integration with the Boundary CLI for connections
 - Tabulated display of available resources
+- Automatic Kubernetes configuration for Kubernetes targets
 
 ## Prerequisites
 
@@ -39,7 +41,7 @@ cd boundary-kubernetes-injector
 2. Build the binary:
 
 ```bash
-go build -o boundary-selector
+go build -o main
 ```
 
 ## Configuration
@@ -62,18 +64,60 @@ BOUNDARY_PASSWORD=your-password
 
 ## Usage
 
-1. Ensure your `.env` file is properly configured
-2. Run the tool:
+#### Interactive Mode
+
+Run the tool without any arguments to use the interactive selection interface:
 
 ```bash
-./boundary-selector
+./main
 ```
 
-3. Follow the interactive prompts to:
-   - Select an organization
-   - Choose a project
-   - Pick a target
-   - Connect to the selected target
+Follow the interactive prompts to:
+
+- Select an organization
+- Choose a project
+- Pick a target
+- Connect to the selected target
+
+#### Direct Target Connection
+
+Connect directly to a specific target by providing its ID:
+
+```bash
+./main --target-id ttcp_1234567890
+```
+
+#### Target Alias Connection
+
+Connect to a target using its name or alias:
+
+```bash
+./main --target-alias my-kubernetes-cluster
+```
+
+> Examples
+
+#### Workflow with Desktop Client
+
+A common workflow using the Boundary Desktop Client:
+
+1. Find your target in the Boundary Desktop Client
+2. Copy the target ID (e.g., `ttcp_1234567890`)
+3. Connect directly using the tool:
+   ```bash
+   ./main --target-id ttcp_1234567890
+   ```
+4. The tool will automatically extract credentials and update your Kubernetes configuration
+
+#### Using a Target Alias
+
+If you have a target with a memorable name:
+
+```bash
+./main --target-alias prod-eks-cluster
+```
+
+The tool will find the target with that name/alias across all organizations and projects, then connect to it directly.
 
 ## Program Flow
 
@@ -87,15 +131,19 @@ BOUNDARY_PASSWORD=your-password
    - Authenticates with Boundary server
    - Stores authentication token
 
-3. **Resource Selection**
+3. **Resource Selection** (Interactive mode only)
 
    - Lists and displays available organizations
    - Shows projects within selected organization
    - Displays targets within selected project
 
-4. **Connection**
+4. **Target Connection**
    - Establishes connection to selected target
-   - Displays connection information and credentials
+   - Extracts credentials from the Boundary session
+   - For Kubernetes targets:
+     - Saves the certificate to `~/.kube/`
+     - Updates the Kubernetes configuration
+     - Sets up authentication for the cluster
 
 ## Code Structure
 
