@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,6 +32,13 @@ type Config struct {
 	LoginName    string
 	AuthMethodID string
 	Password     string
+}
+
+// CLIConfig holds the command-line flag values
+type CLIConfig struct {
+	TargetID      string
+	TargetAlias   string
+	SkipSelection bool
 }
 
 type ScopeInfo struct {
@@ -222,6 +230,61 @@ func listTargetsInProject(client *api.Client, projectID string) ([]TargetInfo, e
 	}
 
 	return targetList, nil
+}
+
+func getTargetByID(client *api.Client, targetID string) (*targets.Target, error) {
+	targetClient := targets.NewClient(client)
+	result, err := targetClient.Read(context.Background(), targetID)
+	if err != nil {
+		return nil, fmt.Errorf("error reading target: %v", err)
+	}
+	return result.Item, nil
+}
+
+func lookupTargetByAlias(client *api.Client, alias string) (string, error) {
+	// Start with the global scope
+	scopeClient := scopes.NewClient(client)
+
+	// Get all org scopes
+	orgs, err := listOrgScopes(scopeClient)
+	if err != nil {
+		return "", fmt.Errorf("error listing organizations: %v", err)
+	}
+
+	// For each org, search in projects
+	for _, org := range orgs {
+		projects, err := listProjectsInOrg(scopeClient, org.ID)
+		if err != nil {
+			continue
+		}
+
+		// For each project, search targets
+		for _, project := range projects {
+			targetClient := targets.NewClient(client)
+			result, err := targetClient.List(context.Background(), project.ID)
+			if err != nil {
+				continue
+			}
+
+			// Check each target for matching alias or name
+			for _, target := range result.Items {
+				// Check if the name matches
+				if target.Name == alias {
+					return target.Id, nil
+				}
+
+				// Check if there's an alias attribute
+				if target.Attributes != nil {
+					attrs := target.Attributes
+					if aliasVal, ok := attrs["alias"]; ok && aliasVal == alias {
+						return target.Id, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no target found with alias or name %s", alias)
 }
 
 func connectToTarget(client *api.Client, targetID string) (*targets.SessionAuthorization, error) {
@@ -785,7 +848,7 @@ func runBoundaryConnect(config Config, targetId, targetName string, client *api.
 	fmt.Println("----------------------------------------")
 	for key, value := range sessionInfo {
 		if value != "" {
-			fmt.Printf("%s: %s\n", strings.Title(key), value)
+			fmt.Printf("%s: %s\n", strings.Title(strings.ReplaceAll(key, "_", " ")), value)
 		}
 	}
 
@@ -815,6 +878,27 @@ func runBoundaryConnect(config Config, targetId, targetName string, client *api.
 		fmt.Printf("\nConnect to %s using: %s:%s\n", targetName, address, port)
 	} else {
 		fmt.Println("No actionable session info available for this target type")
+	}
+
+	return nil
+}
+
+// Direct connection handler for when a specific target is provided
+func handleDirectConnection(client *api.Client, config Config, targetID string) error {
+	// Read the target information to show user something
+	targetClient := targets.NewClient(client)
+	target, err := targetClient.Read(context.Background(), targetID)
+	if err != nil {
+		fmt.Printf("Error reading target information: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Connecting directly to target: %s (%s)\n", target.Item.Name, targetID)
+
+	// Run the boundary connect with appropriate configuration
+	if err := runBoundaryConnect(config, targetID, target.Item.Name, client); err != nil {
+		fmt.Printf("Error connecting to target: %v\n", err)
+		os.Exit(1)
 	}
 
 	return nil
@@ -859,12 +943,16 @@ func listAndPrintScopes(client *api.Client, config Config) error {
 		return fmt.Errorf("error selecting target: %v", err)
 	}
 
-	_, err = getScopeIDForTarget(client, selectedTargetID)
-	if err != nil {
-		return fmt.Errorf("error getting scope ID for target: %v", err)
+	// Find target name for the selected target ID
+	var targetName string
+	for _, t := range targets {
+		if t.ID == selectedTargetID {
+			targetName = t.Name
+			break
+		}
 	}
 
-	if err := runBoundaryConnect(config, selectedTargetID, targets[0].Name, client); err != nil {
+	if err := runBoundaryConnect(config, selectedTargetID, targetName, client); err != nil {
 		return fmt.Errorf("error running boundary connect: %v", err)
 	}
 
@@ -872,11 +960,45 @@ func listAndPrintScopes(client *api.Client, config Config) error {
 }
 
 func main() {
+	// Define CLI configuration with flags
+	var cliConfig CLIConfig
+
+	// Define command-line flags
+	flag.StringVar(&cliConfig.TargetID, "target-id", "", "Direct Boundary target ID to connect to (bypasses selection)")
+	flag.StringVar(&cliConfig.TargetAlias, "target-alias", "", "Boundary target alias to connect to (bypasses selection)")
+	flag.BoolVar(&cliConfig.SkipSelection, "skip-selection", false, "Skip the interactive selection workflow")
+	flag.Parse()
+
+	// Load environment configuration
 	config := loadConfig()
 	client := authenticateWithBoundary(config)
 
-	if err := listAndPrintScopes(client, config); err != nil {
-		fmt.Printf("Error listing scopes: %v\n", err)
-		os.Exit(1)
+	// Determine the workflow based on flags
+	if cliConfig.TargetID != "" {
+		// Direct target ID connection workflow
+		fmt.Printf("Using provided target ID: %s\n", cliConfig.TargetID)
+		if err := handleDirectConnection(client, config, cliConfig.TargetID); err != nil {
+			fmt.Printf("Error connecting to target: %v\n", err)
+			os.Exit(1)
+		}
+	} else if cliConfig.TargetAlias != "" {
+		// Target alias lookup workflow
+		fmt.Printf("Looking up target by alias: %s\n", cliConfig.TargetAlias)
+		targetID, err := lookupTargetByAlias(client, cliConfig.TargetAlias)
+		if err != nil {
+			fmt.Printf("Error looking up target by alias: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Found target ID: %s for alias: %s\n", targetID, cliConfig.TargetAlias)
+		if err := handleDirectConnection(client, config, targetID); err != nil {
+			fmt.Printf("Error connecting to target: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Use the existing interactive workflow
+		if err := listAndPrintScopes(client, config); err != nil {
+			fmt.Printf("Error in interactive workflow: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
