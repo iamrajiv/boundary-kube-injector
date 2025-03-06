@@ -552,7 +552,6 @@ func updateKubeConfig(targetID, sessionID, address, port, certificatePath, acces
 	}
 
 	var existingConfig []byte
-
 	// Read existing config if it exists
 	if _, err := os.Stat(configPath); err == nil {
 		existingConfig, err = os.ReadFile(configPath)
@@ -569,16 +568,16 @@ func updateKubeConfig(targetID, sessionID, address, port, certificatePath, acces
 	contextName := fmt.Sprintf("%s-%s", targetName, targetID)
 	userName := fmt.Sprintf("user-%s", sessionID)
 
-	newCluster := fmt.Sprintf(`cluster:
+	newCluster := fmt.Sprintf(`name: %s
+cluster:
     certificate-authority: %s
     server: https://%s:%s
-    tls-server-name: kubernetes
-    name: %s`, certificatePath, address, port, clusterName)
+    tls-server-name: kubernetes`, clusterName, certificatePath, address, port)
 
-	newContext := fmt.Sprintf(`context:
+	newContext := fmt.Sprintf(`name: %s
+context:
     cluster: %s
-    user: %s
-    name: %s`, clusterName, userName, contextName)
+    user: %s`, contextName, clusterName, userName)
 
 	newUser := fmt.Sprintf(`name: %s
 user:
